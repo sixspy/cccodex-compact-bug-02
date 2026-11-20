@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.db import get_db
 from app.services.errors import ServiceError
+from app.services.merge_repair import _state_from_conn
 
 
 def list_files(table_name: str | None = None, db_path: str | None = None) -> list[dict]:
@@ -15,12 +16,20 @@ def list_files(table_name: str | None = None, db_path: str | None = None) -> lis
         else:
             rows = conn.execute("SELECT * FROM lake_files ORDER BY id").fetchall()
         items = [dict(r) for r in rows]
+        state_cache: dict[int, dict] = {}
         for it in items:
-            chip = conn.execute(
-                "SELECT value FROM meta WHERE key=?",
-                (f"file_chip_{it['id']}",),
-            ).fetchone()
-            it["display_status"] = chip["value"] if chip else it["status"]
+            plan_ids = conn.execute(
+                "SELECT plan_id FROM plan_items WHERE file_id=?", (it["id"],)
+            ).fetchall()
+            chip = "未回写"
+            for pr in plan_ids:
+                pid = int(pr["plan_id"])
+                if pid not in state_cache:
+                    state_cache[pid] = _state_from_conn(conn, pid)
+                if state_cache[pid]["aligned"]:
+                    chip = "已回写"
+            it["display_status"] = it["status"]
+            it["writeback_chip"] = chip
         return items
 
 

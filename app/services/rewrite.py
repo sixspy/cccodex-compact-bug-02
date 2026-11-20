@@ -1,22 +1,30 @@
-"""重写合并：按计划执行合并任务。"""
+"""重写合并：按计划执行合并任务，成功即同事务冻结切面并晋升碎件态。"""
 from __future__ import annotations
 
-from app.db import get_db
+from app.db import get_db, write_txn
 from app.services.errors import ServiceError
-from app.services.merge_chip import mark_job_success_chip
+from app.services.merge_repair import write_success_inside_txn
 
 
 def list_jobs(db_path: str | None = None) -> list[dict]:
     with get_db(db_path) as conn:
         rows = conn.execute(
-            "SELECT j.*, p.plan_code, p.target_table FROM rewrite_jobs j "
-            "JOIN compact_plans p ON p.id=j.plan_id ORDER BY j.id DESC"
+            "SELECT j.*, p.plan_code, p.target_table, w.chip AS writeback_chip "
+            "FROM rewrite_jobs j "
+            "JOIN compact_plans p ON p.id=j.plan_id "
+            "LEFT JOIN merge_writebacks w ON w.plan_id=j.plan_id AND w.job_id=j.id "
+            "ORDER BY j.id DESC"
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            item = dict(r)
+            item["chip"] = "已回写" if item.pop("writeback_chip") else "未回写"
+            out.append(item)
+        return out
 
 
 def start_rewrite(plan_id: int, db_path: str | None = None) -> dict:
-    with get_db(db_path) as conn:
+    with write_txn(db_path) as conn:
         plan = conn.execute(
             "SELECT * FROM compact_plans WHERE id=?", (plan_id,)
         ).fetchone()
@@ -32,7 +40,7 @@ def start_rewrite(plan_id: int, db_path: str | None = None) -> dict:
             raise ServiceError("已有在途合并任务", 409)
         items = conn.execute(
             "SELECT f.* FROM plan_items i JOIN lake_files f ON f.id=i.file_id "
-            "WHERE i.plan_id=? AND f.status='已入计划'",
+            "WHERE i.plan_id=? AND f.status IN ('已入计划','已合并') ORDER BY f.id",
             (plan_id,),
         ).fetchall()
         if not items:
@@ -47,27 +55,25 @@ def start_rewrite(plan_id: int, db_path: str | None = None) -> dict:
         conn.execute(
             "UPDATE compact_plans SET status='执行中' WHERE id=?", (plan_id,)
         )
-        # baseline: synchronous success path (出题可改失败半态)
-        # silent: job chip success without promoting file rows
+        # 成功：任务行、成功快照、碎件态晋升、回写徽记同事务落库，不留半态
         conn.execute(
             "UPDATE rewrite_jobs SET status='成功', merged_bytes=?, message=?, "
             "finished_at=datetime('now') WHERE id=?",
             (total, f"已合并 {len(items)} 个碎文件", job_id),
         )
-        mark_job_success_chip(job_id, db_path)
-        for row in items:
-            conn.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-                (f"file_chip_{row['id']}", "已合并"),
-            )
+        state = write_success_inside_txn(conn, plan_id, job_id)
         conn.execute(
             "UPDATE compact_plans SET status='已完成' WHERE id=?", (plan_id,)
         )
-        return dict(
-            conn.execute(
-                "SELECT * FROM rewrite_jobs WHERE id=?", (job_id,)
-            ).fetchone()
-        )
+        return {
+            **dict(
+                conn.execute(
+                    "SELECT * FROM rewrite_jobs WHERE id=?", (job_id,)
+                ).fetchone()
+            ),
+            "chip": "已回写" if state["aligned"] else "未回写",
+            "promoted": state["merged_count"],
+        }
 
 
 def fail_open_job(job_id: int, reason: str, db_path: str | None = None) -> dict:

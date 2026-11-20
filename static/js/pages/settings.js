@@ -30,12 +30,13 @@ export async function renderSettings(view, setMsg) {
   try {
     const dash = await api('/api/merge_skew/dash');
     view.innerHTML += `<section class="card" style="margin-top:1rem">
-      <h3>合并偏斜旁路</h3>
+      <h3>合并回写核验</h3>
       <span class="tag">${dash.chip}</span>
       <p class="muted">真相 ${dash.truth} · 假绿 ${dash.fake_green}</p>
+      <p class="muted">${dash.reason || '成功芯片与碎件态已对齐'}</p>
       <div class="row">
         <button id="note_merge_skew" type="button">记一笔</button>
-        <button id="half_merge_skew" type="button">半修对齐</button>
+        <button id="half_merge_skew" type="button">半修对齐（已停用）</button>
       </div>
     </section>`;
     document.getElementById('note_merge_skew').onclick = async () => {
@@ -48,7 +49,7 @@ export async function renderSettings(view, setMsg) {
     document.getElementById('half_merge_skew').onclick = async () => {
       try {
         const r = await api('/api/merge_skew/half', { method:'POST', body:'{}' });
-        setMsg('半修 ' + r.panel_chip + ' / ' + r.truth);
+        setMsg(r.message || ('半修 ' + r.panel_chip + ' / ' + r.truth));
         await renderSettings(view, setMsg);
       } catch (e) { setMsg(e.message, true); }
     };

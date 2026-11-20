@@ -1,8 +1,9 @@
-"""体积对账：对照计划挂载体积与合并结果。"""
+"""体积对账：对照计划挂载体积与合并结果，成功切面未对齐即拒绝出报告。"""
 from __future__ import annotations
 
-from app.db import get_db
+from app.db import get_db, write_txn
 from app.services.errors import ServiceError
+from app.services.merge_repair import _state_from_conn, latest_success_job
 
 
 def list_reports(db_path: str | None = None) -> list[dict]:
@@ -15,20 +16,26 @@ def list_reports(db_path: str | None = None) -> list[dict]:
 
 
 def run_reconcile(plan_id: int, db_path: str | None = None) -> dict:
-    with get_db(db_path) as conn:
+    """对账前先核成功芯片与碎件态是否齐：偏了立即拒绝，不出半修报告。"""
+    with write_txn(db_path) as conn:
         plan = conn.execute(
             "SELECT * FROM compact_plans WHERE id=?", (plan_id,)
         ).fetchone()
         if not plan:
             raise ServiceError("计划不存在", 404)
+        job = latest_success_job(conn, plan_id)
+        if job:
+            state = _state_from_conn(conn, plan_id)
+            if not state["aligned"]:
+                raise ServiceError(
+                    f"对账被拒：成功芯片与碎件态未对齐（{state['reason']}）；"
+                    f"请先点纠偏回写把成功切面写齐，再跑体积对账",
+                    409,
+                )
         before = conn.execute(
             "SELECT COALESCE(SUM(f.size_bytes),0) AS b, COUNT(*) AS c "
-            "FROM plan_items i JOIN lake_files f ON f.id=i.file_id WHERE i.plan_id=?",
-            (plan_id,),
-        ).fetchone()
-        job = conn.execute(
-            "SELECT * FROM rewrite_jobs WHERE plan_id=? AND status='成功' "
-            "ORDER BY id DESC LIMIT 1",
+            "FROM plan_items i JOIN lake_files f ON f.id=i.file_id "
+            "WHERE i.plan_id=? AND f.status != '作废'",
             (plan_id,),
         ).fetchone()
         after = int(job["merged_bytes"]) if job else 0

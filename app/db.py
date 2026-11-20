@@ -4,6 +4,8 @@ from pathlib import Path
 
 from app.config import Config
 
+BUSY_TIMEOUT_MS = 15000
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS lake_files (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +54,26 @@ CREATE TABLE IF NOT EXISTS volume_reports (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 合并成功切面：独立快照表，冻住成功那一刻的文件与体积，晋升碎件态前必先落这。
+CREATE TABLE IF NOT EXISTS merge_success_snapshots (
+  plan_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  file_id INTEGER NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  frozen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (job_id, file_id)
+);
+
+-- 成功回写徽记：合并队列读这一行判「已回写」，与快照同事务落下。
+CREATE TABLE IF NOT EXISTS merge_writebacks (
+  plan_id INTEGER PRIMARY KEY,
+  job_id INTEGER NOT NULL,
+  file_count INTEGER NOT NULL,
+  merged_bytes INTEGER NOT NULL,
+  chip TEXT NOT NULL,
+  written_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS lab_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -68,9 +90,10 @@ CREATE TABLE IF NOT EXISTS meta (
 def connect(db_path: str | None = None) -> sqlite3.Connection:
     path = db_path or Config.database()
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     return conn
 
 
@@ -78,6 +101,21 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
 def get_db(db_path: str | None = None):
     conn = connect(db_path)
     try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def write_txn(db_path: str | None = None):
+    """写事务：BEGIN IMMEDIATE 先拿写锁，杜绝两名仓管纠偏双写互相覆盖。"""
+    conn = connect(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
     except Exception:

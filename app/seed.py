@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from app.db import SCHEMA, get_db, init_schema
+from app.services.merge_skew_surface import seed_skew
 
 
-SCHEMA_VERSION = "compact-v2"
+SCHEMA_VERSION = "compact-v3"
 
 
 def _schema_compatible(conn) -> bool:
@@ -29,6 +30,8 @@ def seed_if_needed(db_path: str | None = None) -> dict:
         if not _schema_compatible(conn) or (ver and ver["value"] != SCHEMA_VERSION):
             for table in (
                 "volume_reports",
+                "merge_writebacks",
+                "merge_success_snapshots",
                 "rewrite_jobs",
                 "plan_items",
                 "compact_plans",
@@ -85,8 +88,8 @@ def seed_if_needed(db_path: str | None = None) -> dict:
         )
         conn.execute("INSERT INTO meta(key, value) VALUES ('lab','湖表压实台')")
         try:
-            from app.services.merge_skew_surface import seed_skew
-            seed_skew(db_path)
+            # 旧版展示/真相双源键清场，避免假绿残留（并入本事务，不另开连接）
+            seed_skew(db_path, conn)
         except Exception:
             pass
         return {
@@ -102,6 +105,8 @@ def reset_seed(db_path: str | None = None) -> None:
     with get_db(db_path) as conn:
         for table in (
             "volume_reports",
+            "merge_writebacks",
+            "merge_success_snapshots",
             "rewrite_jobs",
             "plan_items",
             "compact_plans",

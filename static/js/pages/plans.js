@@ -16,12 +16,14 @@ export async function renderPlans(view, setMsg) {
       ${(j.items || []).map(p => `<article class="card">
         <h3>${p.plan_code}</h3>
         <span class="tag">${p.status}</span>
+        <span class="tag" data-wb="${p.id}">核验中</span>
         <p>${p.title}</p>
         <p class="muted">${p.target_table} · ${p.item_count} 文件 · ${p.plan_bytes} 字节</p>
         <div class="row">
           <button data-attach="${p.id}" type="button">挂入碎文件</button>
           <button data-pub="${p.id}" class="primary" type="button">发布</button>
-          <button data-detail="${p.id}" type="button">详情</button><span class="tag" data-thick="merge_skew">已回写</span>
+          <button data-detail="${p.id}" type="button">详情</button>
+          <button data-repair="${p.id}" type="button">纠偏回写</button>
         </div>
         <pre class="muted" id="d${p.id}"></pre>
       </article>`).join('') || '<p class="muted">暂无计划</p>'}
@@ -63,4 +65,22 @@ export async function renderPlans(view, setMsg) {
       } catch (e) { setMsg(e.message, true); }
     };
   });
+  view.querySelectorAll('[data-repair]').forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        const r = await api('/api/merge_skew/repair/' + btn.dataset.repair, { method:'POST', body:'{}' });
+        setMsg(r.message || '已回写');
+        await renderPlans(view, setMsg);
+      } catch (e) { setMsg(e.message, true); }
+    };
+  });
+  await Promise.all((j.items || []).map(async p => {
+    const chip = document.querySelector('[data-wb="' + p.id + '"]');
+    if (!chip) return;
+    try {
+      const s = await api('/api/merge_skew/repair/' + p.id);
+      chip.textContent = s.chip || '未回写';
+      chip.title = s.aligned ? '成功芯片与碎件态已对齐' : (s.reason || '');
+    } catch (e) { chip.textContent = '未回写'; }
+  }));
 }

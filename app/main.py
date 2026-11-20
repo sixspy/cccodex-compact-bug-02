@@ -13,6 +13,7 @@ from app.handlers.api_reconcile import ApiReconcileReports
 from app.handlers.api_rewrite import ApiRewriteJobs, ApiRewriteStart
 from app.handlers.api_settings import ApiSettings
 from app.handlers.api_merge_skew import (
+    ApiMergeRepair,
     ApiMergeSkewDash,
     ApiMergeSkewHalf,
     ApiMergeSkewNote,
@@ -55,6 +56,7 @@ def make_app() -> tornado.web.Application:
             (r"/api/merge_skew/note", ApiMergeSkewNote),
             (r"/api/merge_skew/half", ApiMergeSkewHalf),
             (r"/api/merge_skew/snap", ApiMergeSkewSnap),
+            (r"/api/merge_skew/repair/([0-9]+)", ApiMergeRepair),
             (
                 r"/static/(.*)",
                 tornado.web.StaticFileHandler,
